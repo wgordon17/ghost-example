@@ -1,3 +1,5 @@
+:heavy_exclamation_mark: IMPORTANT: This repo currently only supports Ghost 2.X :bangbang:
+
 # ghost-example
 Example repository displaying one way to deploy a Ghost application
 
