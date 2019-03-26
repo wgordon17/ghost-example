@@ -1,0 +1,447 @@
+---
+apiVersion: v1
+kind: Template
+metadata:
+  name: ghost-template
+  annotations:
+    openshift.io/display-name: Ghost
+    description: >-
+      Uses ghost-cli to install and run a Ghost powered website.
+
+      If relying on a generated hostname, be sure to update the `url` environment variable
+          oc set env dc ghost url=https://$(oc get route ghost -o custom-columns=HOST:.spec.host --no-headers)
+
+
+      It is strongly encouraged that you also set up the email related environment variables
+        - mail__transport
+        - mail__options__service
+        - mail__options__host
+        - mail__options__port
+        - mail__options__auth__user
+        - mail__options__auth__pass
+
+      Reference: https://docs.ghost.org/concepts/config/#mail
+    tags: quickstart,nodejs
+    iconClass: icon-nodejs
+    template.openshift.io/bindable: "false"
+    openshift.io/documentation-url: "https://github.com/openshift-cs/ghost-example"
+message: >-
+  If relying on a generated hostname, be sure to update the `url` environment variable
+          oc set env dc ghost url=https://$(oc get route ghost -o custom-columns=HOST:.spec.host --no-headers)
+
+
+  It is strongly encouraged that you also set up the email related environment variables
+    - mail__transport
+    - mail__options__service
+    - mail__options__host
+    - mail__options__port
+    - mail__options__auth__user
+    - mail__options__auth__pass
+
+  Reference: https://docs.ghost.org/concepts/config/#mail
+labels:
+  template: "ghost-template"
+objects:
+###
+# Database Objects
+###
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: "${NAME}-database"
+    labels:
+      app: "${NAME}"
+  stringData:
+    database-name: "${MYSQL_DATABASE}"
+    database-password: "${MYSQL_PASSWORD}"
+    database-root-password: "${MYSQL_ROOT_PASSWORD}"
+    database-user: "${MYSQL_USER}"
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: "${NAME}-database"
+    labels:
+      app: "${NAME}"
+  spec:
+    ports:
+    - name: mysql
+      port: 3306
+    selector:
+      name: "${NAME}-database"
+
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: "${NAME}-database"
+    labels:
+      app: "${NAME}"
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: "${MYSQL_VOLUME_CAPACITY}"
+
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      app: "${NAME}"
+    annotations:
+      template.alpha.openshift.io/wait-for-ready: "true"
+    name: "${NAME}-database"
+  spec:
+    replicas: 1
+    selector:
+      name: "${NAME}-database"
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          name: "${NAME}-database"
+          app: "${NAME}"
+      spec:
+        containers:
+        - env:
+          - name: MYSQL_USER
+            valueFrom:
+              secretKeyRef:
+                key: database-user
+                name: "${NAME}-database"
+          - name: MYSQL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: database-password
+                name: "${NAME}-database"
+          - name: MYSQL_ROOT_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: database-root-password
+                name: "${NAME}-database"
+          - name: MYSQL_DATABASE
+            valueFrom:
+              secretKeyRef:
+                key: database-name
+                name: "${NAME}-database"
+          image:
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            initialDelaySeconds: 30
+            tcpSocket:
+              port: 3306
+            timeoutSeconds: 1
+          name: mysql
+          ports:
+          - containerPort: 3306
+          readinessProbe:
+            exec:
+              command:
+              - "/bin/sh"
+              - "-i"
+              - "-c"
+              - MYSQL_PWD="$MYSQL_PASSWORD" mysql -h 127.0.0.1 -u $MYSQL_USER -D $MYSQL_DATABASE
+                -e 'SELECT 1'
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          resources:
+            limits:
+              memory: "${MYSQL_MEMORY_LIMIT}"
+          volumeMounts:
+          - mountPath: "/var/lib/mysql/data"
+            name: "${NAME}-database-data"
+        volumes:
+        - name: "${NAME}-database-data"
+          persistentVolumeClaim:
+            claimName: "${NAME}-database"
+    triggers:
+    - imageChangeParams:
+        automatic: true
+        containerNames:
+        - mysql
+        from:
+          kind: ImageStreamTag
+          name: mysql:${MYSQL_VERSION}
+          namespace: "${NAMESPACE}"
+      type: ImageChange
+    - type: ConfigChange
+
+###
+# Ghost Objects
+###
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: "${NAME}"
+    labels:
+      app: "${NAME}"
+  spec:
+    ports:
+    - name: http
+      port: 8080
+    selector:
+      name: "${NAME}"
+
+- apiVersion: v1
+  kind: Route
+  metadata:
+    name: "${NAME}"
+    labels:
+      app: "${NAME}"
+  spec:
+    host: "${APPLICATION_URL}"
+    to:
+      kind: Service
+      name: "${NAME}"
+      weight: 1
+    tls:
+      termination: edge
+      insecureEdgeTerminationPolicy: Redirect
+
+- apiVersion: v1
+  kind: ImageStream
+  metadata:
+    name: "${NAME}"
+    labels:
+      app: "${NAME}"
+
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: "${NAME}"
+    labels:
+      app: "${NAME}"
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    resources:
+      requests:
+        storage: "${GHOST_VOLUME_CAPACITY}"
+
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    name: "${NAME}"
+    labels:
+      app: "${NAME}"
+    annotations:
+      template.alpha.openshift.io/wait-for-ready: "true"
+  spec:
+    nodeSelector:
+    source:
+      type: Git
+      git:
+        uri: "${SOURCE_REPOSITORY_URL}"
+        ref: "${SOURCE_REPOSITORY_REF}"
+      contextDir: "${CONTEXT_DIR}"
+    strategy:
+      type: Source
+      sourceStrategy:
+        from:
+          kind: ImageStreamTag
+          namespace: "${NAMESPACE}"
+          name: nodejs:10
+        env:
+        - name: GHOST_DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: "${NAME}-database"
+              key: database-user
+        - name: GHOST_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: "${NAME}-database"
+              key: database-password
+    output:
+      to:
+        kind: ImageStreamTag
+        name: "${NAME}:latest"
+    triggers:
+    - type: ImageChange
+    - type: ConfigChange
+    - type: GitHub
+      github:
+        secret: "${GITHUB_WEBHOOK_SECRET}"
+
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    name: "${NAME}"
+    labels:
+      app: "${NAME}"
+  spec:
+    replicas: 1
+    selector:
+      name: "${NAME}"
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          name: "${NAME}"
+          app: "${NAME}"
+      spec:
+        containers:
+        - env:
+          - name: OPENSHIFT_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          - name: database__client
+            value: mysql
+          - name: database__connection__user
+            valueFrom:
+              secretKeyRef:
+                key: database-user
+                name: "${NAME}-database"
+          - name: database__connection__password
+            valueFrom:
+              secretKeyRef:
+                key: database-password
+                name: "${NAME}-database"
+          - name: database__connection__database
+            valueFrom:
+              secretKeyRef:
+                key: database-name
+                name: "${NAME}-database"
+          - name: database__connection__host
+            value: "${NAME}-database.$(OPENSHIFT_NAMESPACE).svc"
+          - name: database__connection__port
+            value: "3306"
+          - name: server__host
+            value: "0.0.0.0"
+          - name: server__port
+            value: "8080"
+          - name: url
+            value: "${APPLICATION_URL}"
+          image:
+          livenessProbe:
+            initialDelaySeconds: 30
+            tcpSocket:
+              port: 8080
+            timeoutSeconds: 1
+          name: "${NAME}"
+          ports:
+          - containerPort: 8080
+          resources:
+            limits:
+              memory: "${GHOST_MEMORY_LIMIT}"
+          volumeMounts:
+          - mountPath: "/ghost-data"
+            name: "${NAME}-data"
+        volumes:
+        - name: "${NAME}-data"
+          persistentVolumeClaim:
+            claimName: "${NAME}"
+    triggers:
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - "${NAME}"
+        from:
+          kind: ImageStreamTag
+          name: "${NAME}:latest"
+    - type: ConfigChange
+
+parameters:
+- name: NAME
+  displayName: Application name
+  description: The name assigned to all of the application components defined in this template.
+  required: true
+  value: ghost
+
+- name: APPLICATION_URL
+  displayName: Application Hostname
+  description: |
+    The exposed hostname that will route to the Ghost application. Leaving this blank will
+    auto-generate a URL, but you will have to manually update the `url` environment variable
+    in the DeploymentConfig.
+
+- name: GHOST_MEMORY_LIMIT
+  displayName: Ghost Memory Limit
+  description: Maximum amount of memory the Ghost container can use.
+  required: true
+  value: "512Mi"
+
+- name: GHOST_VOLUME_CAPACITY
+  displayName: Ghost Volume Capacity
+  description: |
+    Amount of storage to use for the Ghost application to ensure data and end-user
+    files are persisted across reboots
+  required: true
+  value: "5Gi"
+
+- name: MYSQL_DATABASE
+  displayName: Database Name
+  description: Database name used by the Ghost application.
+  required: true
+  value: ghost
+
+- name: MYSQL_MEMORY_LIMIT
+  displayName: MySQL Memory Limit
+  description: Maximum amount of memory the MySQL container can use.
+  required: true
+  value: "512Mi"
+
+- name: MYSQL_VOLUME_CAPACITY
+  displayName: MySQL Volume Capacity
+  description: Amount of storage to persist for the MySQL database.
+  required: true
+  value: "1Gi"
+
+- name: MYSQL_VERSION
+  displayName: MySQL Version
+  description: Version of MySQL image to be used (5.7, or latest).
+  required: true
+  value: "5.7"
+
+- name: MYSQL_USER
+  displayName: MySQL Connection Username
+  description: Username for MySQL user that will be used for accessing the database.
+  required: true
+  generate: expression
+  from: "user[A-Z0-9]{5}"
+
+- name: MYSQL_PASSWORD
+  displayName: MySQL Connection Password
+  description: Password for the MySQL connection user.
+  required: true
+  generate: expression
+  from: "[a-zA-Z0-9]{16}"
+
+- name: MYSQL_ROOT_PASSWORD
+  displayName: MySQL root user Password
+  description: Password for the MySQL root user.
+  required: true
+  generate: expression
+  from: "[a-zA-Z0-9]{16}"
+
+- name: SOURCE_REPOSITORY_URL
+  displayName: Git Repository URL
+  description: The URL of the repository with your application source code.
+  required: true
+  value: https://github.com/openshift-cs/ghost-example
+
+- name: SOURCE_REPOSITORY_REF
+  displayName: Git Reference
+  description: Set this to a branch name, tag or other ref of your repository if you are not using the default branch.
+  value: master
+
+- name: CONTEXT_DIR
+  displayName: Context Directory
+  description: Set this to the relative path to your project if it is not in the root of your repository.
+
+- name: NAMESPACE
+  displayName: Namespace
+  description: The OpenShift Namespace where the NodeJS s2i builder and MySQL ImageStreams reside.
+  required: true
+  value: openshift
+
+- name: GITHUB_WEBHOOK_SECRET
+  displayName: GitHub Webhook Secret
+  description: A secret string used to configure the GitHub webhook.
+  generate: expression
+  from: "[a-zA-Z0-9]{40}"
