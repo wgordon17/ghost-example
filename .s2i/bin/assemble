@@ -77,3 +77,6 @@ node_modules/ghost-cli/bin/ghost install --verbose \
 
 # Fix source directory permissions
 fix-permissions ./
+
+# Remove ghost-cli node_modules to reduce image size
+rm -rf node_modules

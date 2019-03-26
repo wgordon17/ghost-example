@@ -322,6 +322,11 @@ objects:
             tcpSocket:
               port: 8080
             timeoutSeconds: 1
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                - "./copy_application_files.sh"
           name: "${NAME}"
           ports:
           - containerPort: 8080

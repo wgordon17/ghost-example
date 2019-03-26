@@ -17,8 +17,13 @@ fi
 # hot deploy and debugging are enabled.
 run_node() {
   echo -e "Environment: \n\tNODE_ENV=${NODE_ENV}"
+  while [ ! -d "/ghost-data/current" ]
+  do
+    echo "Waiting for application directory to save to persistent volume..."
+    sleep 5
+  done
   echo "Running Ghost..."
-  cd ghost-install/current
+  cd /ghost-data/current
   exec npm run -d $NPM_RUN --verbose --no-prompt
 }
 
